@@ -2,29 +2,21 @@ use std::fs;
 use std::io;
 use std::str::FromStr;
 use std::env;
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Credential {
+  nonce: Box<[u8]>,
+  name: String,
+  username: String,
+  password: Box<[u8]>,
+}
+
+struct DecryptedCredential {
+  nonce: chacha20poly1305::Nonce,
   name: String,
   username: String,
   password: String,
-}
-
-impl FromStr for Credential {
-  type Err = &'static str;
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    let parts: Vec<&str> = s.trim().split(':').collect();
-    if parts.len() != 3 {
-      return Err("Invalid number of parts");
-    }
-
-    let name = parts[0].trim().to_string();
-    let username = parts[1].trim().to_string();
-    let password = parts[2].trim().to_string();
-
-    Ok(Credential { name, username, password})
-  }
 }
 
 fn read_store_file() -> io::Result<String> {
@@ -41,34 +33,34 @@ fn read_store() -> Result<Vec<Credential>, Box<dyn std::error::Error>> {
     }
   };
 
-  let lines: Vec<&str> = file_contents
-    .split('\n')
-    .map(|line| line.trim_end_matches('\r'))
-    .collect();
-
-  let mut credentials: Vec<Credential> = Vec::new();
-
-  for line in lines {
-    if line.is_empty() {
-      continue;
-    }
-    match Credential::from_str(line) {
-      Ok(cred) => credentials.push(cred),
-      Err(e) => {
-        eprintln!("Error parsing line: '{}', error: {}", line, e);
-        // return Err(e.into());
-      }
-    }
-  }
-
-  Ok(credentials)
+  let deserialized: Vec<Credential> = serde_json::from_str(&file_contents).unwrap();
+  Ok(deserialized)
 }
 
-fn get_password(credentials: Vec<Credential>, name: &str) -> Result<Credential, Box<dyn std::error::Error>> {
+fn decrypt_password(credential: Credential, key: &str) -> Result<DecryptedCredential, Box<dyn std::error::Error>> {
+    use chacha20poly1305::{
+        aead::{Aead, AeadCore, KeyInit, OsRng},
+        ChaCha20Poly1305, Nonce, Key,
+    };
+    use sha2::{Sha256, Digest};
+    let hash = Sha256::digest(key);
+    let key: Key = Key::clone_from_slice(&hash);
+    let cipher = ChaCha20Poly1305::new(&key);
+    let nonce = Nonce::from_slice(&credential.nonce);
+    let ciphertext = match cipher.decrypt(&nonce, &*credential.password) {
+        Ok(pass) => String::from_utf8(pass),
+        Err(e) => panic!("Panic decrypt: {}", e)
+    };
+    Ok(DecryptedCredential { nonce: *nonce, name: credential.name, username: credential.username, password: ciphertext? })
+}
+
+fn get_password(credentials: Vec<Credential>, name: &str) -> Result<DecryptedCredential, Box<dyn std::error::Error>> {
   // seach by similarity. If found one, print it, if found multiple, ask which one you meant
   for cred in credentials {
     if cred.name == *name {
-      return Ok(cred);
+      let key = rpassword::prompt_password("Provide Key: ").unwrap();
+      let decrypted_password = decrypt_password(cred, &key)?;
+      return Ok(decrypted_password);
     }
   }
 
@@ -91,7 +83,42 @@ fn print_all_passwords(credentials: Vec<Credential>) {
   }
 }
 
+fn asd() -> Result<(), Box<dyn std::error::Error>> {
+    use chacha20poly1305::{
+        aead::{Aead, AeadCore, KeyInit, OsRng},
+        ChaCha20Poly1305, Nonce, Key,
+    };
+    use sha2::{Sha256, Digest};
+    let hash = Sha256::digest(b"password");
+    let key: Key = Key::clone_from_slice(&hash);
+    let cipher = ChaCha20Poly1305::new(&key);
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ciphertext = cipher.encrypt(&nonce, b"asd".as_ref());
+    let noncestr = serde_json::to_string(&nonce.as_slice()).unwrap();
+    let ciphertextstr = match ciphertext {
+        Ok(v) => v,
+        Err(e) => panic!("Panic, {}", e),
+    };
+
+    let ciphertext2 = match cipher.encrypt(&nonce, b"asd".as_ref()) {
+        Ok(pass) => String::from_utf8(pass),
+        Err(e) => panic!("Panic decrypt: {}", e)
+    };
+    let ciphertext3 = match ciphertext2 {
+        Ok(passt) => passt,
+        Err(e) => panic!("Panic decyrpt2: {}", e)
+    };
+    println!("encrypted: {}", ciphertext3);
+
+    let ciphertextstr2 = serde_json::to_string(&ciphertextstr.as_slice()).unwrap();
+    println!("{}", noncestr);
+    println!("{}", ciphertextstr2);
+   
+    Ok(())
+}
+
 fn main() {
+  // asd();
   let args: Vec<String> = env::args().collect();
 
   let search_name: Option<&String> = args.get(1);
