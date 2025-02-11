@@ -12,13 +12,6 @@ struct Credential {
   password: Box<[u8]>,
 }
 
-struct DecryptedCredential {
-  nonce: chacha20poly1305::Nonce,
-  name: String,
-  username: String,
-  password: String,
-}
-
 fn read_store_file() -> io::Result<String> {
   // hardcoded ftw
   fs::read_to_string("/home/oskar/passwords.txt")
@@ -37,7 +30,7 @@ fn read_store() -> Result<Vec<Credential>, Box<dyn std::error::Error>> {
   Ok(deserialized)
 }
 
-fn decrypt_password(credential: Credential, key: &str) -> Result<DecryptedCredential, Box<dyn std::error::Error>> {
+fn decrypt_password(credential: &Credential, key: &str) -> Result<String, Box<dyn std::error::Error>> {
     use chacha20poly1305::{
         aead::{Aead, AeadCore, KeyInit, OsRng},
         ChaCha20Poly1305, Nonce, Key,
@@ -51,16 +44,14 @@ fn decrypt_password(credential: Credential, key: &str) -> Result<DecryptedCreden
         Ok(pass) => String::from_utf8(pass),
         Err(e) => panic!("Panic decrypt: {}", e)
     };
-    Ok(DecryptedCredential { nonce: *nonce, name: credential.name, username: credential.username, password: ciphertext? })
+    Ok(ciphertext?)
 }
 
-fn get_password(credentials: Vec<Credential>, name: &str) -> Result<DecryptedCredential, Box<dyn std::error::Error>> {
+fn get_credential(credentials: Vec<Credential>, name: &str) -> Result<Credential, Box<dyn std::error::Error>> {
   // seach by similarity. If found one, print it, if found multiple, ask which one you meant
   for cred in credentials {
     if cred.name == *name {
-      let key = rpassword::prompt_password("Provide Key: ").unwrap();
-      let decrypted_password = decrypt_password(cred, &key)?;
-      return Ok(decrypted_password);
+      return Ok(cred);
     }
   }
 
@@ -68,9 +59,15 @@ fn get_password(credentials: Vec<Credential>, name: &str) -> Result<DecryptedCre
 }
 
 fn print_password(credentials: Vec<Credential>, name: &str) {
-  match get_password(credentials, name) {
+  match get_credential(credentials, name) {
     Ok(cred) => {
-      println!("Name: {}, Username: {}, Password: {}", cred.name, cred.username, cred.password);
+      let key = rpassword::prompt_password("Provide Key: ").unwrap();
+      let decrypted_password = match decrypt_password(&cred, &key) {
+        Ok(dpass) => dpass,
+        Err(e) => panic!("Panic print password, {}", e),
+      };
+
+      println!("Name: {}, Username: {}, Password: {}", cred.name, cred.username, decrypted_password);
       return;
     },
     Err(_) => println!("Credentials for \"{}\" not found", name)
